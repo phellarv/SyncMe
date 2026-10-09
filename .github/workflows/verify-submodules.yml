@@ -1,0 +1,104 @@
+name: Verify submodule pins
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    if: github.server_url == 'https://github.com'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+          fetch-depth: 0
+
+      - name: Verify submodule pins exist on remote main
+        run: |
+          set -euo pipefail
+
+          if [ ! -f .gitmodules ]; then
+            echo "::error::.gitmodules file not found"
+            exit 1
+          fi
+
+          sub_names=$(git config -f .gitmodules --get-regexp '^submodule\..*\.path$' | awk -F'.' '{print $2}')
+          for name in $sub_names; do
+            path="$(git config -f .gitmodules --get "submodule.${name}.path")"
+            url="$(git config -f .gitmodules --get "submodule.${name}.url")"
+
+            slug="${url#*github.com/}"
+            slug="${slug%.git}"
+
+            tree_entry="$(git ls-tree HEAD "$path" 2>/dev/null || true)"
+            mode="$(echo "$tree_entry" | awk '{print $1}')"
+            obj_type="$(echo "$tree_entry" | awk '{print $2}')"
+            sha="$(echo "$tree_entry" | awk '{print $3}')"
+
+            if [ "$mode" != "160000" ] || [ "$obj_type" != "commit" ] || [ -z "$sha" ]; then
+              echo "::error::Path '$path' is not registered as a git submodule gitlink on HEAD (mode: ${mode:-none}, type: ${obj_type:-none})"
+              exit 1
+            fi
+
+            # Check that the pinned commit exists and is reachable on main branch
+            compare_json="$(gh api "repos/${slug}/compare/main...${sha}" 2>&1)" || {
+              echo "::error::Failed to query GitHub compare API for ${slug} at commit ${sha}:"
+              echo "$compare_json"
+              exit 1
+            }
+
+            status="$(echo "$compare_json" | jq -r '.status // empty')"
+            if [ "$status" != "identical" ] && [ "$status" != "behind" ]; then
+              echo "::error::Submodule pin ${sha} in ${slug} is not on main branch (status: ${status:-unknown})"
+              exit 1
+            fi
+
+            echo "[OK] Submodule ${name} (${path} -> ${slug}): pin ${sha} is ${status} on main"
+          done
+
+      - name: Verify version parity on release tag
+        run: |
+          set -euo pipefail
+
+          tag="$(git describe --tags --exact-match --match 'v*' HEAD 2>/dev/null)" || {
+            echo "No release tag (v*) found on HEAD, skipping version parity check"
+            exit 0
+          }
+
+          echo "Verifying release tag ${tag} across submodules..."
+
+          sub_names=$(git config -f .gitmodules --get-regexp '^submodule\..*\.path$' | awk -F'.' '{print $2}')
+          for name in $sub_names; do
+            path="$(git config -f .gitmodules --get "submodule.${name}.path")"
+            url="$(git config -f .gitmodules --get "submodule.${name}.url")"
+
+            slug="${url#*github.com/}"
+            slug="${slug%.git}"
+
+            pin="$(git ls-tree HEAD "$path" | awk '{print $3}')"
+
+            tag_commit_json="$(gh api "repos/${slug}/commits/tags/${tag}" 2>&1)" || {
+              echo "::error::Release tag ${tag} does not exist in repository ${slug}"
+              echo "$tag_commit_json"
+              exit 1
+            }
+
+            tag_sha="$(echo "$tag_commit_json" | jq -r '.sha // empty')"
+            if [ "$tag_sha" != "$pin" ]; then
+              echo "::error::Repository ${slug} tag ${tag} points to ${tag_sha}, but SyncMe pins ${pin}"
+              exit 1
+            fi
+
+            echo "[OK] Repository ${slug} tag ${tag} matches pinned commit ${pin}"
+          done
+
+          echo "Version parity check passed for release ${tag}"

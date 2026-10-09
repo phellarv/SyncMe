@@ -1,0 +1,6 @@
+[submodule "SyncMe-Client"]
+	path = SyncMe-Client
+	url = https://github.com/phellarv/SyncMe-Client.git
+[submodule "SyncMe-Server"]
+	path = SyncMe-Server
+	url = https://github.com/phellarv/SyncMe-Server.git

@@ -1,0 +1,8 @@
+[.]
+checkout = git clone https://github.com/<your-username>/SyncMe.git
+
+[SyncMe-Client]
+checkout = git clone https://github.com/<your-username>/SyncMe-Client.git
+
+[SyncMe-Server]
+checkout = git clone https://github.com/<your-username>/SyncMe-Server.git
